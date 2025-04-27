@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Kokoro TTS Demo</title>
+</head>
+<body>
+  <h1>Kokoro TTS Demo</h1>
+  <textarea id="text" rows="4" cols="50" placeholder="Type text here..."></textarea><br>
+  <button id="play">Play</button>
+
+  <script>
+    document.getElementById("play").addEventListener("click", () => {
+      const text = document.getElementById("text").value;
+      if (!text) return;
+      fetch(`/tts?text=${encodeURIComponent(text)}`)
+        .then(res => res.blob())
+        .then(blob => {
+          const url = URL.createObjectURL(blob);
+          new Audio(url).play();
+        })
+        .catch(console.error);
+    });
+  </script>
+</body>
+</html>
