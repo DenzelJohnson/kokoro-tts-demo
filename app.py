@@ -11,8 +11,7 @@ app = FastAPI()
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 # Initialize Kokoro pipeline
-pipeline = KPipeline()
-
+pipeline = KPipeline(lang_code="a")
 @app.get("/tts")
 async def tts(text: str = Query(..., min_length=1)):
     # Generate waveform (numpy array) at 24 kHz
