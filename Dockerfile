@@ -1,18 +1,24 @@
-# Use a slim Python base
 FROM python:3.11-slim
 
-# Set working dir
 WORKDIR /app
 
-# Copy & install dependencies
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y libsndfile1 git && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the code
+# Pre-download the Kokoro model (avoids HF rate limits at runtime)
+RUN python -c "from kokoro import KPipeline; KPipeline(lang_code='a')"
+
+# Copy application code
 COPY . .
 
-# Listen on port 8080 (Cloud Run default)
+# Port for Cloud Run
 ENV PORT 8080
 
-# Launch Uvicorn
+# Start the server
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
