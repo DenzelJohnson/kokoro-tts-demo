@@ -2,23 +2,24 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system deps + git (required for HF downloads)
+# Install system dependencies + git (required for HF downloads)
 RUN apt-get update && \
     apt-get install -y libsndfile1 git && \
     rm -rf /var/lib/apt/lists/*
 
-# Set up Python and Hugging Face cache
-ENV PIP_NO_CACHE_DIR=false \
-    HF_HOME=/app/.cache/huggingface
+# Set up Hugging Face cache directory
+ENV HF_HOME=/app/.cache/huggingface
+RUN mkdir -p ${HF_HOME}
 
-# Install Python deps
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download the Kokoro model (avoid runtime downloads)
-RUN python -c "from kokoro import KPipeline; KPipeline(lang_code='a')"
+# Pre-download and explicitly cache all model files
+RUN python -c "from huggingface_hub import snapshot_download; \
+    snapshot_download(repo_id='hexgrad/Kokoro-82M', local_dir='/app/.cache/huggingface/hexgrad_Kokoro-82M')"
 
-# Copy app code
+# Copy application code
 COPY . .
 
 # Set PORT for Cloud Run
