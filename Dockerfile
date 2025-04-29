@@ -2,31 +2,27 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system deps + git (required for HF downloads)
 RUN apt-get update && \
-    apt-get install -y \
-    libsndfile1 \
-    && rm -rf /var/lib/apt/lists/*
+    apt-get install -y libsndfile1 git && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better layer caching
+# Set up Python and Hugging Face cache
+ENV PIP_NO_CACHE_DIR=false \
+    HF_HOME=/app/.cache/huggingface
+
+# Install Python deps
 COPY requirements.txt .
-
-# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download Kokoro model (optional - removes cold start delay)
-# RUN python -c "from kokoro import KPipeline; KPipeline(lang_code='a')"
+# Pre-download the Kokoro model (avoid runtime downloads)
+RUN python -c "from kokoro import KPipeline; KPipeline(lang_code='a')"
 
-# Copy application files
-COPY static/ ./static/
-COPY app.py .
+# Copy app code
+COPY . .
 
-# Set environment variables
+# Set PORT for Cloud Run
 ENV PORT 8080
-ENV PYTHONUNBUFFERED True
 
-# Expose the port
-EXPOSE 8080
-
-# Run with uvicorn (better for FastAPI ASGI apps)
+# Run the app
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
