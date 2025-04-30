@@ -80,28 +80,30 @@ def text_to_speech(
                       description="Text to synthesise"),
     voice: str = Query("af_heart", description="Voice name (see Kokoro docs)")
 ) -> StreamingResponse:
-    """
-    Synthesise speech from `text` using the selected `voice`.
-    Streams a 24 kHz mono WAV without holding the full waveform in RAM.
-    """
     if pipeline is None:
         raise HTTPException(status_code=500, detail="TTS engine not ready")
 
     try:
         logger.debug(f"TTS request | voice={voice!r} | text={text!r}")
-        audio_iter = pipeline(text, voice=voice)   # ndarray OR generator of chunks
+        audio_iter = pipeline(text, voice=voice)   # ndarray or generator
 
-        # --- write chunks progressively to keep memory low ---
         buf = io.BytesIO()
         with sf.SoundFile(buf, mode="w", samplerate=24_000,
                           channels=1, format="WAV", subtype="PCM_16") as wavfile:
-            for chunk in audio_iter:
-                chunk_arr = np.asarray(chunk, dtype=np.float32).reshape(-1, 1)
-                wavfile.write(chunk_arr)
+
+            # Handle both cases uniformly
+            if hasattr(audio_iter, "shape"):              # ndarray path
+                wavfile.write(audio_iter.reshape(-1, 1))
+            else:                                         # generator path
+                for chunk in audio_iter:
+                    # Result object or ndarray?
+                    samples = chunk.audio if hasattr(chunk, "audio") else chunk
+                    wavfile.write(np.asarray(samples, dtype=np.float32)
+                                   .reshape(-1, 1))
 
         buf.seek(0)
         return StreamingResponse(buf, media_type="audio/wav")
 
     except Exception as exc:
-        logger.exception("TTS generation failed ❌")
+        logger.exception("TTS generation failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
