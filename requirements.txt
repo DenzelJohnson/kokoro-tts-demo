@@ -1,7 +1,6 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.29.0
-kokoro>=0.7.16
-soundfile>=0.12.1          # ← audio I/O
-Cython==3.0.10             # ← pinned to dodge the NumPy-2 pre-release issue
-numpy==1.26.4              # (optional but reproducible)
+kokoro>=0.7.16               # pulls numpy==1.26.*, misaki, loguru…
+soundfile>=0.12.1            # audio I/O
+Cython==3.0.10               # pinned to avoid NumPy-2 prerelease issue
 huggingface_hub>=0.23.0

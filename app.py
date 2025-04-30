@@ -1,96 +1,73 @@
+# app.py – FastAPI wrapper around Kokoro-TTS
 import io
-import torch
-import logging
 import os
-from fastapi import FastAPI, Query, HTTPException
-from fastapi.responses import StreamingResponse, FileResponse
-from kokoro import KPipeline
+import logging
+from typing import Optional
+
 import soundfile as sf
-from huggingface_hub import snapshot_download
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from huggingface_hub import login as hf_login
+from kokoro import KPipeline
+from loguru import logger
 
-# Initialize FastAPI
-app = FastAPI()
-logger = logging.getLogger("uvicorn.error")
+APP_PORT: int = int(os.getenv("PORT", 8080))
+MODEL_REPO: str = os.getenv("KOKORO_REPO_ID", "hexgrad/Kokoro-82M")
+HF_TOKEN:   Optional[str] = os.getenv("HF_TOKEN")   # optional, but avoids 429s
+LANG_CODE:  str = os.getenv("KOKORO_LANG", "a")     # “a” = generic English voice
 
-# Global variable for the pipeline
-pipeline = None
+app = FastAPI(title="Kokoro-TTS demo")
+pipeline: Optional[KPipeline] = None     # will hold the loaded model
 
-def initialize_model():
-    """Initialize and quantize the TTS model from local cache"""
+
+# ---------- start-up & model init ---------- #
+@app.on_event("startup")
+def initialize_model() -> None:
+    """
+    Load Kokoro model once at container start-up.
+    Raise RuntimeError if anything is missing – that will fail the
+    Cloud Run revision immediately instead of giving first user a 500.
+    """
     global pipeline
+
+    if HF_TOKEN:
+        logger.info("Logging into Hugging Face Hub with token (HF_TOKEN)")
+        hf_login(token=HF_TOKEN)
+
     try:
-        logger.info("Initializing Kokoro TTS pipeline...")
-        
-        # Path to our pre-downloaded model
-        model_path = "/app/.cache/huggingface/hexgrad_Kokoro-82M"
-        
-        # Verify model files exist
-        required_files = ["config.json", "pytorch_model.bin"]
-        for file in required_files:
-            if not os.path.exists(os.path.join(model_path, file)):
-                raise FileNotFoundError(f"Missing model file: {file}")
-        
-        # Initialize pipeline with local model
-        pipeline = KPipeline(lang_code="a", repo_id=model_path)
-        
-        # Quantize to reduce memory usage (optional)
-        pipeline.model = torch.quantization.quantize_dynamic(
-            pipeline.model,
-            {torch.nn.Linear},
-            dtype=torch.qint8
-        )
-        
-        logger.info("Model successfully loaded from cache")
-        
-    except Exception as e:
-        logger.error(f"Model initialization failed: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="TTS engine failed to initialize"
-        )
+        logger.info(f"Loading Kokoro pipeline from {MODEL_REPO} …")
+        pipeline = KPipeline(repo_id=MODEL_REPO, lang_code=LANG_CODE).eval()
+        logger.info("Kokoro pipeline ready ✅")
+    except Exception as exc:
+        logger.exception("Model initialization failed ❌")
+        raise RuntimeError("TTS engine failed to initialize") from exc
 
-@app.get("/tts")
-async def text_to_speech(
-    text: str = Query(..., min_length=1, max_length=500)
-):
-    """Generate speech audio from text"""
-    global pipeline
-    
+
+# ---------- health endpoint ---------- #
+@app.get("/", tags=["health"])
+def root() -> dict:
+    return {"status": "alive"}
+
+
+# ---------- TTS endpoint ---------- #
+@app.get("/tts", tags=["tts"])
+def text_to_speech(
+    text: str = Query(..., min_length=1, max_length=500, description="Text to synthesise"),
+) -> StreamingResponse:
+    """
+    Convert text → speech (24 kHz mono WAV).
+    Returns audio/wav stream; client receives immediately after synthesis.
+    """
+    if pipeline is None:
+        raise HTTPException(status_code=500, detail="TTS engine not ready")
+
     try:
-        # Lazy-load model on first request
-        if pipeline is None:
-            initialize_model()
-        
-        # Generate waveform (numpy array) at 24 kHz
-        logger.info(f"Generating speech for: {text[:50]}...")
-        waveform = pipeline(text)
-        
-        # Write to WAV in-memory
-        buf = io.BytesIO()
-        sf.write(buf, waveform, samplerate=24000, format="WAV")
-        buf.seek(0)
-        
-        return StreamingResponse(buf, media_type="audio/wav")
-    
-    except Exception as e:
-        logger.error(f"TTS generation failed: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Speech generation failed: {str(e)}"
-        )
-
-@app.get("/")
-async def serve_index():
-    """Serve the frontend interface"""
-    if os.path.exists("static/index.html"):
-        return FileResponse("static/index.html")
-    raise HTTPException(status_code=404, detail="Frontend not found")
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint for Cloud Run"""
-    return {
-        "status": "ready", 
-        "model_loaded": pipeline is not None,
-        "cache_exists": os.path.exists("/app/.cache/huggingface/hexgrad_Kokoro-82M")
-    }
+        logger.debug(f"TTS request: {text!r}")
+        waveform = pipeline(text)                # NumPy float32, shape (1, n_samples)
+        wav_bytes = io.BytesIO()
+        sf.write(wav_bytes, waveform.T, samplerate=24_000, format="WAV")
+        wav_bytes.seek(0)
+        return StreamingResponse(wav_bytes, media_type="audio/wav")
+    except Exception as exc:
+        logger.exception("TTS generation failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
