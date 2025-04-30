@@ -72,14 +72,15 @@ def initialize_model() -> None:
 @app.get("/tts", tags=["tts"])
 def text_to_speech(
     text: str = Query(..., min_length=1, max_length=500,
-                      description="Text to synthesise")
+                      description="Text to synthesise"),
+    voice: str = Query("af_heart", description="Voice name (see Kokoro docs)")
 ) -> StreamingResponse:
     if pipeline is None:
         raise HTTPException(status_code=500, detail="TTS engine not ready")
 
     try:
         logger.debug(f"TTS request: {text!r}")
-        audio = pipeline(text)                 # ndarray OR generator of chunks
+        audio = pipeline(text, voice=voice)                 # ndarray OR generator of chunks
 
         if hasattr(audio, "shape"):            # ndarray path
             waveform = audio
