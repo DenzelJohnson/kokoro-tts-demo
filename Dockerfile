@@ -1,8 +1,9 @@
 # Dockerfile – Cloud Run container for Kokoro-TTS demo
 FROM python:3.11-slim
 
-# system libs for soundfile
-RUN apt-get update && apt-get install -y --no-install-recommends libsndfile1 && \
+# System libs for soundfile
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libsndfile1 && \
     rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -15,7 +16,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# OPTIONAL: bake Kokoro weights to avoid HF download / 429
+# OPTIONAL: bake model weights to avoid first-start download
 # RUN python - <<'PY'
 # from huggingface_hub import snapshot_download
 # snapshot_download('hexgrad/Kokoro-82M',
@@ -23,7 +24,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 #   local_dir_use_symlinks=False)
 # PY
 
-# app source
+# App source
 COPY . .
 
 EXPOSE 8080
