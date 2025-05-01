@@ -2,23 +2,37 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Kokoro TTS Demo</title>
+  <title>Kokoro / Google TTS Demo</title>
 </head>
 <body>
-  <h1>Kokoro TTS Demo</h1>
-  <textarea id="text" rows="4" cols="50" placeholder="Type text here..."></textarea><br>
+  <h1>Kokoro / Google TTS Demo</h1>
+
+  <textarea id="text" rows="4" cols="60"
+            placeholder="Type text here…"></textarea><br>
+
+  <label>
+    Engine:
+    <select id="engine">
+      <option value="kokoro">Kokoro (local)</option>
+      <option value="gcp">Google Cloud TTS</option>
+    </select>
+  </label>
   <button id="play">Play</button>
 
   <script>
-    document.getElementById("play").addEventListener("click", () => {
-      const text = document.getElementById("text").value;
+    const playBtn   = document.getElementById("play");
+    const textBox   = document.getElementById("text");
+    const engineSel = document.getElementById("engine");
+
+    playBtn.addEventListener("click", () => {
+      const text   = textBox.value.trim();
+      const engine = engineSel.value;
       if (!text) return;
-      fetch(`/tts?voice=af_heart&text=${encodeURIComponent(text)}`)
-        .then(res => res.blob())
-        .then(blob => {
-          const url = URL.createObjectURL(blob);
-          new Audio(url).play();
-        })
+
+      const url = `/tts?engine=${engine}&voice=af_heart&text=${encodeURIComponent(text)}`;
+      fetch(url)
+        .then(r => r.ok ? r.blob() : Promise.reject(r.statusText))
+        .then(b => new Audio(URL.createObjectURL(b)).play())
         .catch(console.error);
     });
   </script>

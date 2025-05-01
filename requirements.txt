@@ -1,6 +1,11 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.29.0
-kokoro>=0.7.16               # pulls numpy==1.26.*, misaki, loguru…
-soundfile>=0.12.1            # audio I/O
-Cython==3.0.10               # pinned to avoid NumPy-2 prerelease issue
+
+# Local Kokoro stack
+kokoro>=0.7.16
+soundfile>=0.12.1
+Cython==3.0.10
 huggingface_hub>=0.23.0
+
+# NEW — Google Cloud client
+google-cloud-texttospeech>=2.17.0
