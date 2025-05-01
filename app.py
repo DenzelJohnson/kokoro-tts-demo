@@ -77,7 +77,8 @@ class Engine(str, Enum):
 # --------------------------------------------------------------------------- #
 @app.get("/tts", tags=["tts"])
 def text_to_speech(
-    text:   str    = Query(..., 1, 500, description="Text to synthesise"),
+    text:   str    = Query(...,  min_length=1, max_length=500,
+                           description="Text to synthesise"),
     engine: Engine = Query(Engine.kokoro, description="kokoro | gcp"),
     voice:  str    = Query("af_heart", description="Kokoro voice (ignored by GCP)")
 ) -> StreamingResponse:
