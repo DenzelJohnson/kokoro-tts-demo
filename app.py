@@ -97,7 +97,12 @@ def text_to_speech(
 def _kokoro_tts(text: str, voice: str) -> StreamingResponse:
     audio_iter = pipeline(text, voice=voice)        # ndarray OR generator
     buf = io.BytesIO()
-    with sf.SoundFile(buf, "w", 24_000, 1, "PCM_16") as wav:
+    with sf.SoundFile(buf,
+                      mode="w",
+                      samplerate=24_000,
+                      channels=1,
+                      format="WAV",        # ← ADD THIS
+                      subtype="PCM_16") as wav:
         if hasattr(audio_iter, "shape"):            # ndarray
             wav.write(audio_iter.reshape(-1, 1))
         else:                                       # generator of Result / ndarray
