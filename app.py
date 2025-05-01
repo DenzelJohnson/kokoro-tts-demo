@@ -1,132 +1,116 @@
-"""
-app.py – Cloud-Run demo: choose Kokoro (local) or Google Cloud TTS.
-
-Endpoints
----------
-/               → static/index.html  (demo)
-/tts            → WAV stream (engine=[kokoro|gcp])
-/health         → {"status":"alive"}
-"""
-
-import io
-import os
+import base64, io, os, secrets
 from enum import Enum
 from typing import Optional
 
 import numpy as np
 import soundfile as sf
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import StreamingResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from google.cloud import texttospeech
 from huggingface_hub import login as hf_login
 from kokoro import KPipeline
 from loguru import logger
 
-# --------------------------------------------------------------------------- #
-# ENV
-# --------------------------------------------------------------------------- #
-MODEL_REPO = os.getenv("KOKORO_REPO_ID", "hexgrad/Kokoro-82M")
-LANG_CODE  = os.getenv("KOKORO_LANG", "a")
-HF_TOKEN   = os.getenv("HF_TOKEN")           # injected via Secret Manager
+# -------------------------------------------------------------------- #
+#  Global init
+# -------------------------------------------------------------------- #
+MODEL_REPO = "hexgrad/Kokoro-82M"
+HF_TOKEN   = os.getenv("HF_TOKEN")
+VALID_KEYS = {k.strip() for k in os.getenv("API_KEYS", "").split(",") if k}
 
 pipeline: Optional[KPipeline] = None
-tts_client: Optional[texttospeech.TextToSpeechClient] = None
+gcp_client: Optional[texttospeech.TextToSpeechClient] = None
 
-app = FastAPI(title="Kokoro-&-GCP TTS Demo")
+app = FastAPI(title="Kokoro / GCP TTS API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],          # in prod: narrow to your web domain
+    allow_methods=["POST"],
+    allow_headers=["*"],
+)
 
-# --------------------------------------------------------------------------- #
-# Static + health
-# --------------------------------------------------------------------------- #
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# -------------------------------------------------------------------- #
+#  Auth dependency
+# -------------------------------------------------------------------- #
+def verify_key(authorization: str = Header(...)):
+    try:
+        scheme, token = authorization.split()
+    except ValueError:
+        raise HTTPException(401, "Malformed Authorization header")
+    if scheme.lower() != "bearer" or token not in VALID_KEYS:
+        raise HTTPException(401, "Invalid API key")
 
-@app.get("/", include_in_schema=False)
-def index() -> FileResponse:
-    return FileResponse("static/index.html")
+# -------------------------------------------------------------------- #
+#  Pydantic I/O
+# -------------------------------------------------------------------- #
+class Engine(str, Enum):
+    kokoro = "kokoro-82m"
+    gcp    = "gcp-tts"
 
-@app.get("/health", tags=["health"])
-def health() -> dict:
-    return {"status": "alive"}
+class SpeechReq(BaseModel):
+    model: Engine = Engine.kokoro
+    input: str    = Field(..., min_length=1, max_length=500)
+    voice: str    = "af_heart"
 
-# --------------------------------------------------------------------------- #
-# Startup
-# --------------------------------------------------------------------------- #
+class SpeechResp(BaseModel):
+    audio_base64: str
+
+# -------------------------------------------------------------------- #
+#  Startup
+# -------------------------------------------------------------------- #
 @app.on_event("startup")
-def init_models() -> None:
-    global pipeline, tts_client
-
+def load_models():
+    global pipeline, gcp_client
     if HF_TOKEN:
         hf_login(token=HF_TOKEN.strip())
 
-    logger.info(f"Loading Kokoro pipeline from {MODEL_REPO} …")
-    pipeline = KPipeline(repo_id=MODEL_REPO, lang_code=LANG_CODE)
+    logger.info("Loading Kokoro …")
+    pipeline = KPipeline(repo_id=MODEL_REPO, lang_code="a")
     logger.info("Kokoro ready ✅")
 
-    tts_client = texttospeech.TextToSpeechClient()
-    logger.info("GCP Text-to-Speech client ready ✅")
+    gcp_client = texttospeech.TextToSpeechClient()
+    logger.info("GCP client ready ✅")
 
-# --------------------------------------------------------------------------- #
-# Engines enum
-# --------------------------------------------------------------------------- #
-class Engine(str, Enum):
-    kokoro = "kokoro"
-    gcp    = "gcp"
-
-# --------------------------------------------------------------------------- #
-# TTS route
-# --------------------------------------------------------------------------- #
-@app.get("/tts", tags=["tts"])
-def text_to_speech(
-    text:   str    = Query(...,  min_length=1, max_length=500,
-                           description="Text to synthesise"),
-    engine: Engine = Query(Engine.kokoro, description="kokoro | gcp"),
-    voice:  str    = Query("af_heart", description="Kokoro voice (ignored by GCP)")
-) -> StreamingResponse:
-
-    if pipeline is None or tts_client is None:
-        raise HTTPException(500, "Engines not ready")
-
-    if engine == Engine.kokoro:
-        return _kokoro_tts(text, voice)
-    else:
-        return _gcp_tts(text)
-
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
-def _kokoro_tts(text: str, voice: str) -> StreamingResponse:
-    audio_iter = pipeline(text, voice=voice)        # ndarray OR generator
+# -------------------------------------------------------------------- #
+#  Helper functions
+# -------------------------------------------------------------------- #
+def kokoro_bytes(text: str, voice: str) -> bytes:
+    audio_iter = pipeline(text, voice=voice)
     buf = io.BytesIO()
-    with sf.SoundFile(buf,
-                      mode="w",
-                      samplerate=24_000,
-                      channels=1,
-                      format="WAV",        # ← ADD THIS
-                      subtype="PCM_16") as wav:
-        if hasattr(audio_iter, "shape"):            # ndarray
+    with sf.SoundFile(buf, "w", 24_000, 1, "PCM_16") as wav:
+        if hasattr(audio_iter, "shape"):
             wav.write(audio_iter.reshape(-1, 1))
-        else:                                       # generator of Result / ndarray
+        else:
             for chunk in audio_iter:
                 samples = chunk.audio if hasattr(chunk, "audio") else chunk
                 wav.write(np.asarray(samples, np.float32).reshape(-1, 1))
-    buf.seek(0)
-    return StreamingResponse(buf, media_type="audio/wav")
+    return buf.getvalue()
 
-
-def _gcp_tts(text: str) -> StreamingResponse:
+def gcp_bytes(text: str) -> bytes:
     synthesis_input = texttospeech.SynthesisInput(text=text)
-    voice_params = texttospeech.VoiceSelectionParams(
-        language_code="en-US",
-        name="en-US-Standard-F",        # simple female US voice
+    voice = texttospeech.VoiceSelectionParams(
+        language_code="en-US", name="en-US-Standard-F"
     )
-    audio_cfg = texttospeech.AudioConfig(
+    cfg = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.LINEAR16,
-        sample_rate_hertz=24000,
+        sample_rate_hertz=24000
     )
-    response = tts_client.synthesize_speech(
-        input=synthesis_input,
-        voice=voice_params,
-        audio_config=audio_cfg,
+    resp = gcp_client.synthesize_speech(
+        input=synthesis_input, voice=voice, audio_config=cfg
     )
-    return StreamingResponse(io.BytesIO(response.audio_content),
-                             media_type="audio/wav")
+    return resp.audio_content
+
+# -------------------------------------------------------------------- #
+#  OpenAI-style endpoint
+# -------------------------------------------------------------------- #
+@app.post("/v1/audio/speech",
+          response_model=SpeechResp,
+          dependencies=[Depends(verify_key)])
+def speech(req: SpeechReq):
+    if req.model == Engine.kokoro:
+        wav = kokoro_bytes(req.input, req.voice)
+    else:
+        wav = gcp_bytes(req.input)
+
+    return SpeechResp(audio_base64=base64.b64encode(wav).decode())
